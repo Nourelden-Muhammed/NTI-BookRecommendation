@@ -19,9 +19,9 @@ import pickle
 
 # Data Preprocessing
 
-books_df = pd.read_csv(r"\Dataset\Books.csv", low_memory=False)
-ratings_df = pd.read_csv(r"\Dataset\Ratings.csv")
-users_df = pd.read_csv(r"\Dataset\Users.csv")
+books_df = pd.read_csv("Dataset/Books.csv", low_memory=False)
+ratings_df = pd.read_csv("Dataset/Ratings.csv")
+users_df = pd.read_csv("Dataset/Users.csv")
 
  # Books DataFrame Preprocessing
 books_df["Book-Author"].fillna("Unknown", inplace=True)
