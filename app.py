@@ -91,7 +91,7 @@ st.set_page_config(
 )
 
 # Define file paths
-BASE_PATH = r"\Dataset"
+BASE_PATH = "Dataset"
 FILES = {
     "books": os.path.join(BASE_PATH, "Books.csv"),
     "ratings": os.path.join(BASE_PATH, "Ratings.csv"),
