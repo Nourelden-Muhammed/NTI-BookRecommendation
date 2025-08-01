@@ -123,21 +123,26 @@ def get_top_20_books(ratings_df, books_df):
     top_books = top_books.sort_values("num_ratings", ascending=False).head(20).reset_index(drop=True)
     return top_books
 
-# Function to recommend books
+# Function to recommend books with ranking
 def recommend_books(book_name, pivot_table, model, num_recommendations=5):
     if book_name not in pivot_table.index:
         return None, []
     book_id = pivot_table.index.get_loc(book_name)
-    distances, indices = model.kneighbors(pivot_table.iloc[book_id,:].values.reshape(1, -1), n_neighbors=num_recommendations+1)
+    distances, indices = model.kneighbors(pivot_table.iloc[book_id,:].values.reshape(1, -1), n_neighbors=num_recommendations + 1)
+    # Combine indices and distances for sorting
+    recommendation_data = list(zip(indices.flatten()[1:], distances.flatten()[1:]))
+    # Sort by distance (ascending, so closest match first)
+    recommendation_data.sort(key=lambda x: x[1])
     recommendations = []
-    for i in range(1, len(distances.flatten())):
-        title = pivot_table.index[indices.flatten()[i]]
+    for rank, (idx, dist) in enumerate(recommendation_data[:num_recommendations], 1):
+        title = pivot_table.index[idx]
         info = book_info[book_info["Book-Title"] == title]
         if not info.empty:
             recommendations.append({
                 "title": title,
                 "author": info["Book-Author"].values[0] if not pd.isna(info["Book-Author"].values[0]) else "Unknown",
-                "image_url": info["Image-URL-L"].values[0] if not pd.isna(info["Image-URL-L"].values[0]) else "No Image"
+                "image_url": info["Image-URL-L"].values[0] if not pd.isna(info["Image-URL-L"].values[0]) else "No Image",
+                "rank": rank
             })
     return f"Recommendations for '{book_name}'", recommendations
 
@@ -198,6 +203,7 @@ def main():
                             with col:
                                 with st.container():
                                     st.markdown(f'<div class="book-container">', unsafe_allow_html=True)
+                                    st.markdown(f'<div class="book-rank">#{rec["rank"]}</div>', unsafe_allow_html=True)
                                     if rec["image_url"] and rec["image_url"] != "No Image":
                                         try:
                                             st.image(rec["image_url"], width=120, caption=rec["title"][:25] + "..." if len(rec["title"]) > 25 else rec["title"])
