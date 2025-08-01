@@ -1,87 +1,81 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+from sklearn.neighbors import NearestNeighbors
+from scipy.sparse import csr_matrix
 import pickle
 import os
 
-import pandas as pd
-
-import numpy as np
-
-from sklearn.neighbors import NearestNeighbors
-from sklearn.decomposition import PCA
-from sklearn.metrics import precision_score, recall_score
-from sklearn.manifold import TSNE
-
-from scipy.sparse import csr_matrix
-
-import pickle
-
 # Data Preprocessing
+@st.cache_data
+def load_or_preprocess_data():
+    BASE_PATH = "Dataset"
+    FILES = {
+        "books": os.path.join(BASE_PATH, "Books.csv"),
+        "ratings": os.path.join(BASE_PATH, "Ratings.csv"),
+        "users": os.path.join(BASE_PATH, "Users.csv"),
+        "book_pivot": "book_pivot.pkl",
+        "model_knn": "model_knn.pkl"
+    }
 
-books_df = pd.read_csv("Dataset/Books.csv", low_memory=False)
-ratings_df = pd.read_csv("Dataset/Ratings.csv")
-users_df = pd.read_csv("Dataset/Users.csv")
+    if all(os.path.exists(f) for f in [FILES["book_pivot"], FILES["model_knn"]]):
+        book_pivot = pd.read_pickle(FILES["book_pivot"])
+        model_knn = pickle.load(open(FILES["model_knn"], "rb"))
+        books_df = pd.read_csv(FILES["books"])
+        ratings_df = pd.read_csv(FILES["ratings"])
+    else:
+        # Load raw datasets
+        books_df = pd.read_csv(FILES["books"], low_memory=False)
+        ratings_df = pd.read_csv(FILES["ratings"])
+        users_df = pd.read_csv(FILES["users"])
 
- # Books DataFrame Preprocessing
-books_df["Book-Author"].fillna("Unknown", inplace=True)
-books_df["Publisher"].fillna("Unknown", inplace=True)
-books_df["Image-URL-L"].fillna("No Image", inplace=True)
-books_df["Year-Of-Publication"] = pd.to_numeric(books_df["Year-Of-Publication"], errors='coerce')
-books_df["Year-Of-Publication"].fillna(books_df["Year-Of-Publication"].median(), inplace=True)
-books_df["Year-Of-Publication"] = books_df["Year-Of-Publication"].astype(int)
+        # Books DataFrame Preprocessing
+        books_df["Book-Author"].fillna("Unknown", inplace=True)
+        books_df["Publisher"].fillna("Unknown", inplace=True)
+        books_df["Image-URL-L"].fillna("No Image", inplace=True)
+        books_df["Year-Of-Publication"] = pd.to_numeric(books_df["Year-Of-Publication"], errors='coerce')
+        books_df["Year-Of-Publication"].fillna(books_df["Year-Of-Publication"].median(), inplace=True)
+        books_df["Year-Of-Publication"] = books_df["Year-Of-Publication"].astype(int)
+        books_df.drop(columns=["Image-URL-S", "Image-URL-M"], inplace=True)
 
-books_df.drop(columns=["Image-URL-S", "Image-URL-M"], inplace=True)
+        # Users DataFrame Preprocessing
+        users_df["Age"].fillna(users_df["Age"].median(), inplace=True)
+        users_df["Age"] = users_df["Age"].astype(int)
 
-# Users DataFrame Preprocessing
-users_df["Age"].fillna(users_df["Age"].median(), inplace=True)
-users_df["Age"] = users_df["Age"].astype(int)
+        # Ratings DataFrame Preprocessing
+        explicit_ratings_df = ratings_df[ratings_df["Book-Rating"] != 0]
 
-# Ratings DataFrame Preprocessing
-explicit_ratings_df = ratings_df[ratings_df["Book-Rating"] != 0]
+        # Merge datasets
+        merged_df = explicit_ratings_df.merge(books_df, on="ISBN")
 
-# Merge datasets
-merged_df = explicit_ratings_df.merge(books_df, on="ISBN")
+        # Filter users and books with at least 10 ratings
+        ratings_count_per_user = merged_df["User-ID"].value_counts()
+        users_to_keep = ratings_count_per_user[ratings_count_per_user >= 10].index
+        filtered_users_df = merged_df[merged_df["User-ID"].isin(users_to_keep)]
+        ratings_count_per_book = filtered_users_df["Book-Title"].value_counts()
+        books_to_keep = ratings_count_per_book[ratings_count_per_book >= 10].index
+        final_df = filtered_users_df[filtered_users_df["Book-Title"].isin(books_to_keep)]
 
-# Filter users and books with at least 10 ratings
-ratings_count_per_user = merged_df["User-ID"].value_counts()
-users_to_keep = ratings_count_per_user[ratings_count_per_user >= 10].index
-filtered_users_df = merged_df[merged_df["User-ID"].isin(users_to_keep)]
-ratings_count_per_book = filtered_users_df["Book-Title"].value_counts()
-books_to_keep = ratings_count_per_book[ratings_count_per_book >= 10].index
-final_df = filtered_users_df[filtered_users_df["Book-Title"].isin(books_to_keep)]
+        # Create a pivot table
+        book_pivot = final_df.pivot_table(columns='User-ID', index='Book-Title', values='Book-Rating').fillna(0)
 
-# Save preprocessed data
-final_df.to_csv("preprocessed_data.csv", index=False)
-print("Preprocessed data saved to preprocessed_data.csv")
+        # Save pivot table
+        pd.to_pickle(book_pivot, FILES["book_pivot"])
+        print("Pivot table saved.")
 
-# Create a pivot table and sparse matrix for the recommendation system.
+        # Train the KNN model using cosine similarity
+        model_knn = NearestNeighbors(metric='cosine', algorithm='brute', n_neighbors=20, n_jobs=-1)
+        model_knn.fit(csr_matrix(book_pivot))
 
-book_pivot = final_df.pivot_table(columns='User-ID', index='Book-Title', values='Book-Rating').fillna(0)
-book_sparse_matrix = csr_matrix(book_pivot)
+        # Save the trained model
+        with open(FILES["model_knn"], 'wb') as f:
+            pickle.dump(model_knn, f)
+        print("KNN model saved to model_knn.pkl")
 
-# Save pivot table and sparse matrix
-pd.to_pickle(book_pivot, "book_pivot.pkl")
-pd.to_pickle(book_sparse_matrix, "book_sparse_matrix.pkl")
-print("Pivot table and sparse matrix saved.")
+    return book_pivot, model_knn, books_df, ratings_df
 
-# Train the KNN model using cosine similarity.
-
-model_knn = NearestNeighbors(metric='cosine', algorithm='brute', n_neighbors=20, n_jobs=-1)
-model_knn.fit(book_sparse_matrix)
-
-# Save the trained model
-with open('model_knn.pkl', 'wb') as f:
-    pickle.dump(model_knn, f)
-print("KNN model saved to model_knn.pkl")
-
-# Save book titles
-with open('book_titles.pkl', 'wb') as f:
-    pickle.dump(book_pivot.index, f)
-print("Book titles saved to book_titles.pkl")
-
-
-
+# Load data and models
+book_pivot, model_knn, books_df, ratings_df = load_or_preprocess_data()
 
 # Set page configuration as the FIRST Streamlit command
 st.set_page_config(
@@ -96,19 +90,17 @@ FILES = {
     "books": os.path.join(BASE_PATH, "Books.csv"),
     "ratings": os.path.join(BASE_PATH, "Ratings.csv"),
     "book_pivot": "book_pivot.pkl",
-    "model_knn":  "model_knn.pkl",
-    "book_titles": "book_titles.pkl"
+    "model_knn": "model_knn.pkl"
 }
 
 # Load preprocessed data and models
 try:
     book_pivot = pd.read_pickle(FILES["book_pivot"])
     model_knn = pickle.load(open(FILES["model_knn"], "rb"))
-    book_titles = pickle.load(open(FILES["book_titles"], "rb"))
     books_df = pd.read_csv(FILES["books"])
     ratings_df = pd.read_csv(FILES["ratings"])
 except FileNotFoundError as e:
-    st.error(f"Error: {e}. Ensure the following files are in {BASE_PATH}: Books.csv, Ratings.csv, book_pivot.pkl, model_knn.pkl, book_titles.pkl")
+    st.error(f"Error: {e}. Ensure the following files are in {BASE_PATH}: Books.csv, Ratings.csv, book_pivot.pkl, model_knn.pkl")
     st.stop()
 except Exception as e:
     st.error(f"Unexpected error loading files: {e}")
@@ -154,7 +146,6 @@ def main():
     # Sidebar for navigation
     with st.sidebar:
         st.header("Navigation")
-      #  selected_mode = st.radio("Select Mode", ["Home", "Recommender"])
         option = st.sidebar.selectbox("Choose an option:",
                               ["Top 20 Books", "Get Recommendations"])
 
@@ -191,8 +182,8 @@ def main():
         st.title("📖 Book Recommender Tool")
         st.markdown("Select a book title to get personalized recommendations.")
 
-        # Book title input with autocomplete
-        book_title = st.selectbox("Select or type a book title", options=[""] + list(book_titles), index=0)
+        # Book title input with autocomplete using book_pivot.index
+        book_title = st.selectbox("Select or type a book title", options=[""] + list(book_pivot.index), index=0)
 
         if st.button("Recommend"):
             if book_title:
