@@ -30,6 +30,9 @@ def load_or_preprocess_data():
         ratings_df = pd.read_csv(FILES["ratings"])
         users_df = pd.read_csv(FILES["users"])
 
+        # Initial filtering of Ratings (remove 0 ratings) as per notebook
+        ratings_df = ratings_df[ratings_df["Book-Rating"] != 0]
+
         # Books DataFrame Preprocessing
         # Fill missing Book-Author and Publisher manually as per notebook
         books_df.loc[books_df.ISBN == '0751352497', ['Book-Author', 'Publisher']] = ['DK', 'Dorling Kindersley Publishers Ltd']
@@ -50,11 +53,8 @@ def load_or_preprocess_data():
         users_df = users_df[(users_df["Age"] >= 5) & (users_df["Age"] <= 100)]
         users_df["Age"] = users_df["Age"].astype(int)
 
-        # Ratings DataFrame Preprocessing
-        explicit_ratings_df = ratings_df[ratings_df["Book-Rating"] != 0]
-
         # Merge datasets
-        ratings_books = explicit_ratings_df.merge(books_df, on="ISBN")
+        ratings_books = ratings_df.merge(books_df, on="ISBN")
 
         # Filter books with at least 35 ratings and users with at least 10 ratings
         book_counts = ratings_books["Book-Title"].value_counts()
@@ -124,7 +124,7 @@ book_info = book_pivot_reset.merge(books_df, on="Book-Title", how="left")
 # Function to get top 20 books by number of ratings
 @st.cache_data
 def get_top_20_books(ratings_df, books_df):
-    ratings_df = ratings_df[ratings_df["Book-Rating"] != 0]  # Explicit ratings only
+    # Ensure ratings_df is filtered for explicit ratings only (already done in load_or_preprocess_data)
     top_books = ratings_df.merge(books_df, on="ISBN").groupby("Book-Title").agg(
         {"Book-Rating": "count", "Book-Author": "first", "Image-URL-L": "first"}
     ).rename(columns={"Book-Rating": "num_ratings"}).reset_index()
