@@ -5,7 +5,7 @@ from sklearn.neighbors import NearestNeighbors
 from scipy.sparse import csr_matrix
 import pickle
 import os
-import joblib
+import joblib  # Added to match notebook
 
 # Data Preprocessing
 @st.cache_data
@@ -30,10 +30,8 @@ def load_or_preprocess_data():
         ratings_df = pd.read_csv(FILES["ratings"])
         users_df = pd.read_csv(FILES["users"])
 
-        # Initial filtering of Ratings (remove 0 ratings)
-        ratings_df = ratings_df[ratings_df["Book-Rating"] != 0]
-
         # Books DataFrame Preprocessing
+        # Fill missing Book-Author and Publisher manually as per notebook
         books_df.loc[books_df.ISBN == '0751352497', ['Book-Author', 'Publisher']] = ['DK', 'Dorling Kindersley Publishers Ltd']
         books_df.loc[books_df.ISBN == '9627982032', ['Book-Author', 'Publisher']] = ['Larissa Anne Downe', 'Edinburgh Financial Publishing']
         books_df.loc[books_df.ISBN == '193169656X', ['Book-Author', 'Publisher']] = ['Elaine Corvidae', 'NovelBooks, Inc.']
@@ -52,8 +50,11 @@ def load_or_preprocess_data():
         users_df = users_df[(users_df["Age"] >= 5) & (users_df["Age"] <= 100)]
         users_df["Age"] = users_df["Age"].astype(int)
 
+        # Ratings DataFrame Preprocessing
+        explicit_ratings_df = ratings_df[ratings_df["Book-Rating"] != 0]
+
         # Merge datasets
-        ratings_books = ratings_df.merge(books_df, on="ISBN")
+        ratings_books = explicit_ratings_df.merge(books_df, on="ISBN")
 
         # Filter books with at least 35 ratings and users with at least 10 ratings
         book_counts = ratings_books["Book-Title"].value_counts()
@@ -63,9 +64,6 @@ def load_or_preprocess_data():
         user_counts = ratings_books["User-ID"].value_counts()
         active_users = user_counts[user_counts >= 10].index
         ratings_books = ratings_books[ratings_books["User-ID"].isin(active_users)]
-
-        # Ensure titles are cleaned (strip whitespace and case-insensitive)
-        ratings_books["Book-Title"] = ratings_books["Book-Title"].str.strip().str.lower()
 
         # Create a pivot table
         book_pivot = ratings_books.pivot_table(
@@ -120,19 +118,14 @@ except Exception as e:
 
 # Merge book titles with image URLs and author
 books_df = books_df[["ISBN", "Book-Title", "Book-Author", "Image-URL-L"]].drop_duplicates(subset="Book-Title")
-# Clean book titles in books_df to match ratings_books
-books_df["Book-Title"] = books_df["Book-Title"].str.strip().str.lower()
 book_pivot_reset = book_pivot.reset_index()[["Book-Title"]]
 book_info = book_pivot_reset.merge(books_df, on="Book-Title", how="left")
 
 # Function to get top 20 books by number of ratings
 @st.cache_data
 def get_top_20_books(ratings_df, books_df):
-    # Ensure ratings_df is filtered for explicit ratings only (already done in load_or_preprocess_data)
-    # Merge and clean titles
-    merged_df = ratings_df.merge(books_df, on="ISBN")
-    merged_df["Book-Title"] = merged_df["Book-Title"].str.strip().str.lower()
-    top_books = merged_df.groupby("Book-Title").agg(
+    ratings_df = ratings_df[ratings_df["Book-Rating"] != 0]  # Explicit ratings only
+    top_books = ratings_df.merge(books_df, on="ISBN").groupby("Book-Title").agg(
         {"Book-Rating": "count", "Book-Author": "first", "Image-URL-L": "first"}
     ).rename(columns={"Book-Rating": "num_ratings"}).reset_index()
     top_books = top_books.sort_values("num_ratings", ascending=False).head(20).reset_index(drop=True)
@@ -142,9 +135,11 @@ def get_top_20_books(ratings_df, books_df):
 def recommend_books(book_name, pivot_table, model, num_recommendations=5):
     if book_name not in pivot_table.index:
         return None, []
-    book_id = pivot_table.index.get_loc(book_name.lower().strip())  # Match cleaning
+    book_id = pivot_table.index.get_loc(book_name)
     distances, indices = model.kneighbors(pivot_table.iloc[book_id, :].values.reshape(1, -1), n_neighbors=num_recommendations + 1)
+    # Convert distance to similarity (1 - distance for cosine similarity)
     similarity_scores = 1 - distances.flatten()[1:]  # Higher value means higher similarity
+    # Combine indices and similarity scores, sort by similarity descending
     recommendation_data = list(zip(indices.flatten()[1:], similarity_scores))
     recommendation_data.sort(key=lambda x: x[1], reverse=True)
     recommendations = []
@@ -162,10 +157,12 @@ def recommend_books(book_name, pivot_table, model, num_recommendations=5):
 
 # Main function to render the app
 def main():
+    # Sidebar for navigation
     with st.sidebar:
         st.header("Navigation")
         option = st.sidebar.selectbox("Choose an option:", ["Top 20 Books", "Get Recommendations"])
 
+    # Home Page
     if option == "Top 20 Books":
         st.title("📚 Book Recommender System")
         st.markdown("Welcome to our Book Recommender System! Discover top-rated books or find personalized recommendations.")
@@ -173,6 +170,7 @@ def main():
         st.subheader("Top 20 Most Rated Books")
         top_books = get_top_20_books(ratings_df, books_df)
 
+        # Create a grid layout with 4 columns
         cols = st.columns(4, gap="medium")
         for idx, row in top_books.iterrows():
             col = cols[idx % 4]
@@ -192,11 +190,13 @@ def main():
                     st.markdown(f'<div class="book-ratings">Ratings: {row["num_ratings"]}</div>', unsafe_allow_html=True)
                     st.markdown('</div>', unsafe_allow_html=True)
 
+    # Recommender Page
     elif option == "Get Recommendations":
         st.title("📖 Book Recommender Tool")
         st.markdown("Select a book title to get personalized recommendations.")
 
-        book_title = st.selectbox("Select or type a book title", options=[""] + [t for t in book_pivot.index], index=0)
+        # Book title input with autocomplete using book_pivot.index
+        book_title = st.selectbox("Select or type a book title", options=[""] + list(book_pivot.index), index=0)
 
         if st.button("Recommend"):
             if book_title:
@@ -204,6 +204,7 @@ def main():
                     message, recommendations = recommend_books(book_title, book_pivot, model_knn)
                     if recommendations:
                         st.subheader(message)
+                        # Create a grid layout for recommendations
                         cols = st.columns(4, gap="medium")
                         for idx, rec in enumerate(recommendations):
                             col = cols[idx % 4]
