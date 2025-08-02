@@ -5,6 +5,7 @@ from sklearn.neighbors import NearestNeighbors
 from scipy.sparse import csr_matrix
 import pickle
 import os
+import joblib  # Added to match notebook
 
 # Data Preprocessing
 @st.cache_data
@@ -14,13 +15,13 @@ def load_or_preprocess_data():
         "books": os.path.join(BASE_PATH, "Books.csv"),
         "ratings": os.path.join(BASE_PATH, "Ratings.csv"),
         "users": os.path.join(BASE_PATH, "Users.csv"),
-        "book_pivot": "book_pivot.pkl",
-        "model_knn": "model_knn.pkl"
+        "book_pivot": "book_user_matrix.pkl",
+        "model_knn": "knn_model.pkl"
     }
 
     if all(os.path.exists(f) for f in [FILES["book_pivot"], FILES["model_knn"]]):
         book_pivot = pd.read_pickle(FILES["book_pivot"])
-        model_knn = pickle.load(open(FILES["model_knn"], "rb"))
+        model_knn = joblib.load(FILES["model_knn"])
         books_df = pd.read_csv(FILES["books"])
         ratings_df = pd.read_csv(FILES["ratings"])
     else:
@@ -30,47 +31,56 @@ def load_or_preprocess_data():
         users_df = pd.read_csv(FILES["users"])
 
         # Books DataFrame Preprocessing
+        # Fill missing Book-Author and Publisher manually as per notebook
+        books_df.loc[books_df.ISBN == '0751352497', ['Book-Author', 'Publisher']] = ['DK', 'Dorling Kindersley Publishers Ltd']
+        books_df.loc[books_df.ISBN == '9627982032', ['Book-Author', 'Publisher']] = ['Larissa Anne Downe', 'Edinburgh Financial Publishing']
+        books_df.loc[books_df.ISBN == '193169656X', ['Book-Author', 'Publisher']] = ['Elaine Corvidae', 'NovelBooks, Inc.']
+        books_df.loc[books_df.ISBN == '1931696993', ['Book-Author', 'Publisher']] = ['Linnea Sinclair', 'Novelbooks, Incorporated']
+
         books_df["Book-Author"].fillna("Unknown", inplace=True)
         books_df["Publisher"].fillna("Unknown", inplace=True)
-        books_df["Image-URL-L"].fillna("No Image", inplace=True)
-        books_df["Year-Of-Publication"] = pd.to_numeric(books_df["Year-Of-Publication"], errors='coerce')
-        books_df["Year-Of-Publication"].fillna(books_df["Year-Of-Publication"].median(), inplace=True)
+        books_df["Image-URL-L"] = books_df["Image-URL-L"].fillna(books_df["Image-URL-M"])
+        books_df.drop(["Image-URL-S", "Image-URL-M"], axis=1, inplace=True)
+        books_df["Year-Of-Publication"] = pd.to_numeric(books_df["Year-Of-Publication"], errors="coerce")
+        books_df["Year-Of-Publication"] = books_df["Year-Of-Publication"].fillna(books_df["Year-Of-Publication"].median())
         books_df["Year-Of-Publication"] = books_df["Year-Of-Publication"].astype(int)
-        books_df.drop(columns=["Image-URL-S", "Image-URL-M"], inplace=True)
 
         # Users DataFrame Preprocessing
-        users_df["Age"].fillna(users_df["Age"].median(), inplace=True)
+        users_df["Age"] = users_df["Age"].fillna(users_df["Age"].median())
+        users_df = users_df[(users_df["Age"] >= 5) & (users_df["Age"] <= 100)]
         users_df["Age"] = users_df["Age"].astype(int)
 
         # Ratings DataFrame Preprocessing
         explicit_ratings_df = ratings_df[ratings_df["Book-Rating"] != 0]
 
         # Merge datasets
-        merged_df = explicit_ratings_df.merge(books_df, on="ISBN")
+        ratings_books = explicit_ratings_df.merge(books_df, on="ISBN")
 
-        # Filter users and books with at least 10 ratings
-        ratings_count_per_user = merged_df["User-ID"].value_counts()
-        users_to_keep = ratings_count_per_user[ratings_count_per_user >= 10].index
-        filtered_users_df = merged_df[merged_df["User-ID"].isin(users_to_keep)]
-        ratings_count_per_book = filtered_users_df["Book-Title"].value_counts()
-        books_to_keep = ratings_count_per_book[ratings_count_per_book >= 10].index
-        final_df = filtered_users_df[filtered_users_df["Book-Title"].isin(books_to_keep)]
+        # Filter books with at least 35 ratings and users with at least 10 ratings
+        book_counts = ratings_books["Book-Title"].value_counts()
+        popular_books = book_counts[book_counts >= 35].index
+        ratings_books = ratings_books[ratings_books["Book-Title"].isin(popular_books)]
+
+        user_counts = ratings_books["User-ID"].value_counts()
+        active_users = user_counts[user_counts >= 10].index
+        ratings_books = ratings_books[ratings_books["User-ID"].isin(active_users)]
 
         # Create a pivot table
-        book_pivot = final_df.pivot_table(columns='User-ID', index='Book-Title', values='Book-Rating').fillna(0)
+        book_pivot = ratings_books.pivot_table(
+            index="Book-Title", columns="User-ID", values="Book-Rating"
+        ).fillna(0)
 
-        # Save pivot table
-        pd.to_pickle(book_pivot, FILES["book_pivot"])
-        print("Pivot table saved.")
+        # Convert to sparse matrix
+        book_user_sparse = csr_matrix(book_pivot.values)
 
         # Train the KNN model using cosine similarity
-        model_knn = NearestNeighbors(metric='cosine', algorithm='brute', n_neighbors=20, n_jobs=-1)
-        model_knn.fit(csr_matrix(book_pivot))
+        model_knn = NearestNeighbors(metric="cosine", algorithm="brute", n_neighbors=20, n_jobs=-1)
+        model_knn.fit(book_user_sparse)
 
-        # Save the trained model
-        with open(FILES["model_knn"], 'wb') as f:
-            pickle.dump(model_knn, f)
-        print("KNN model saved to model_knn.pkl")
+        # Save the trained model and pivot table
+        pd.to_pickle(book_pivot, FILES["book_pivot"])
+        joblib.dump(model_knn, FILES["model_knn"])
+        print("Pivot table and KNN model saved.")
 
     return book_pivot, model_knn, books_df, ratings_df
 
@@ -89,18 +99,18 @@ BASE_PATH = "Dataset"
 FILES = {
     "books": os.path.join(BASE_PATH, "Books.csv"),
     "ratings": os.path.join(BASE_PATH, "Ratings.csv"),
-    "book_pivot": "book_pivot.pkl",
-    "model_knn": "model_knn.pkl"
+    "book_pivot": "book_user_matrix.pkl",
+    "model_knn": "knn_model.pkl"
 }
 
 # Load preprocessed data and models
 try:
     book_pivot = pd.read_pickle(FILES["book_pivot"])
-    model_knn = pickle.load(open(FILES["model_knn"], "rb"))
+    model_knn = joblib.load(FILES["model_knn"])
     books_df = pd.read_csv(FILES["books"])
     ratings_df = pd.read_csv(FILES["ratings"])
 except FileNotFoundError as e:
-    st.error(f"Error: {e}. Ensure the following files are in {BASE_PATH}: Books.csv, Ratings.csv, book_pivot.pkl, model_knn.pkl")
+    st.error(f"Error: {e}. Ensure the following files are in {BASE_PATH}: Books.csv, Ratings.csv, book_user_matrix.pkl, knn_model.pkl")
     st.stop()
 except Exception as e:
     st.error(f"Unexpected error loading files: {e}")
@@ -115,11 +125,9 @@ book_info = book_pivot_reset.merge(books_df, on="Book-Title", how="left")
 @st.cache_data
 def get_top_20_books(ratings_df, books_df):
     ratings_df = ratings_df[ratings_df["Book-Rating"] != 0]  # Explicit ratings only
-    top_books = ratings_df.merge(books_df, on="ISBN").groupby("Book-Title").agg({
-        "Book-Rating": "count",
-        "Book-Author": "first",
-        "Image-URL-L": "first"
-    }).rename(columns={"Book-Rating": "num_ratings"}).reset_index()
+    top_books = ratings_df.merge(books_df, on="ISBN").groupby("Book-Title").agg(
+        {"Book-Rating": "count", "Book-Author": "first", "Image-URL-L": "first"}
+    ).rename(columns={"Book-Rating": "num_ratings"}).reset_index()
     top_books = top_books.sort_values("num_ratings", ascending=False).head(20).reset_index(drop=True)
     return top_books
 
@@ -128,11 +136,11 @@ def recommend_books(book_name, pivot_table, model, num_recommendations=5):
     if book_name not in pivot_table.index:
         return None, []
     book_id = pivot_table.index.get_loc(book_name)
-    distances, indices = model.kneighbors(pivot_table.iloc[book_id,:].values.reshape(1, -1), n_neighbors=num_recommendations + 1)
-    # Combine indices and distances, sort by similarity (1 - distance for cosine similarity)
-    similarity_scores = 1 - distances.flatten()[1:]  # Convert distance to similarity (higher is better)
+    distances, indices = model.kneighbors(pivot_table.iloc[book_id, :].values.reshape(1, -1), n_neighbors=num_recommendations + 1)
+    # Convert distance to similarity (1 - distance for cosine similarity)
+    similarity_scores = 1 - distances.flatten()[1:]  # Higher value means higher similarity
+    # Combine indices and similarity scores, sort by similarity descending
     recommendation_data = list(zip(indices.flatten()[1:], similarity_scores))
-    # Sort by similarity descending (highest similarity first)
     recommendation_data.sort(key=lambda x: x[1], reverse=True)
     recommendations = []
     for rank, (idx, similarity) in enumerate(recommendation_data[:num_recommendations], 1):
@@ -152,8 +160,7 @@ def main():
     # Sidebar for navigation
     with st.sidebar:
         st.header("Navigation")
-        option = st.sidebar.selectbox("Choose an option:",
-                              ["Top 20 Books", "Get Recommendations"])
+        option = st.sidebar.selectbox("Choose an option:", ["Top 20 Books", "Get Recommendations"])
 
     # Home Page
     if option == "Top 20 Books":
